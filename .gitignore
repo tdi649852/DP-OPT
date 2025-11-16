@@ -165,4 +165,5 @@ checkpoint/
 data/
 
 openai_config.py
+openrouter_config.py
 flagged

@@ -2,7 +2,7 @@ from transformers import LlamaForCausalLM
 import torch
 from tqdm import trange
 import numpy as np
-from typing import Union, List, Dict
+from typing import Union, List, Dict, Optional
 
 from utils.template import BwdDemosTemplate, DemosTemplate, GenerationTemplate, BackwardGenTemplate, get_bwd_template
 from utils.data import sample_demos
@@ -434,3 +434,146 @@ class BackwardInstructGenerator(InstructGenerator):
             else:
                 processed_instructs.append(instruct)
         return processed_instructs, all_demos
+
+
+class OpenRouterBackwardInstructGenerator(BackwardInstructGenerator):
+    """BackwardInstructGenerator that uses OpenRouter API instead of local models."""
+
+    def __init__(self, openrouter_model: str, label_words,
+                 instruct_type='vicuna', max_new_tokens: int = 128,
+                 gen_temperature: float = 0.9, rep_penalty: float = 1.,
+                 dp_engine: Optional[LDGumbelMechanism] = None,
+                 balance_demos: bool = False,
+                 api_key: Optional[str] = None) -> None:
+        """Initialize OpenRouter-based instruction generator.
+
+        Args:
+            openrouter_model: OpenRouter model name (e.g., "meta-llama/llama-3-8b-instruct")
+            label_words: Label words for classification
+            instruct_type: Instruction template type
+            max_new_tokens: Maximum tokens to generate
+            gen_temperature: Sampling temperature
+            rep_penalty: Repetition penalty
+            dp_engine: Differential privacy engine (optional)
+            balance_demos: Whether to balance demonstrations
+            api_key: OpenRouter API key (optional, uses env var if not provided)
+        """
+        from utils.openrouter_llm import OpenRouterLLM
+
+        # Initialize templates
+        meta_template, suc_demo_template, fail_demo_template = get_bwd_template(
+            instruct_type, privacy_instruct=-1)
+
+        self.suc_demo_template = suc_demo_template
+        self.fail_demo_template = fail_demo_template
+        self.meta_template = meta_template
+
+        # Initialize OpenRouter LLM
+        self.openrouter_llm = OpenRouterLLM(
+            model=openrouter_model,
+            api_key=api_key,
+            temperature=gen_temperature,
+            max_tokens=max_new_tokens,
+            repetition_penalty=rep_penalty,
+            disable_tqdm=False
+        )
+
+        # Store parameters
+        self.model = None  # Not used for OpenRouter
+        self.tokenizer = None  # Not used for OpenRouter
+        self.device = None  # Not used for OpenRouter
+        self.max_new_tokens = max_new_tokens
+        self.label_words = label_words
+        self.ensemble_gen = False  # Not supported with OpenRouter yet
+        self.balance_demos = balance_demos
+        self.gen_temperature = gen_temperature
+        self.rep_penalty = rep_penalty
+        self.dp_engine = dp_engine
+        self.tokenwise_gen = False  # Not supported with OpenRouter
+
+        # Backward messages
+        self.bwd_messages = [
+            "Clarify the instruction by adding few words or a short sentence. Be concise",
+            "Improve the instruction by providing examples on how to solve the task. Be concise.",
+            "Shorten the instruction by removing superflous words or sentences.",
+            "Rewrite the instruction by providing detailed information to avoid ambiguity. Be concise",
+        ]
+
+        # Log
+        self._verbose_cnt = 1
+
+    def forward_generate_prompt(
+            self, meta_prompts: Union[str, List[str]], num_prompts: int,
+            max_new_tokens=None, gen_init='', verbose=True, decode_special_tokens=False,
+            reraise_dp_fail=False):
+        """Generate prompts using OpenRouter API."""
+        if not isinstance(meta_prompts, list):
+            meta_prompts = [meta_prompts]
+
+        if max_new_tokens is None:
+            max_new_tokens = self.max_new_tokens
+
+        # Prepare prompts with gen_init
+        prepared_prompts = [
+            meta_prompt.replace('[APE]', gen_init)
+            for meta_prompt in meta_prompts
+        ]
+
+        # Generate using OpenRouter
+        all_results = []
+
+        if self.ensemble_gen:
+            print("Warning: Ensemble generation not fully supported with OpenRouter")
+            # For now, just generate num_prompts samples
+            for i in range(num_prompts):
+                if i < len(prepared_prompts):
+                    prompt = prepared_prompts[i]
+                else:
+                    # Reuse prompts if we need more samples than we have prompts
+                    prompt = prepared_prompts[i % len(prepared_prompts)]
+
+                result = self.openrouter_llm.generate_text(prompt, n=1)
+                all_results.extend(result)
+
+                if verbose and len(result) > 0:
+                    print(f"Generated instruct:\n[START]{result[0]}[END]")
+        else:
+            # Generate one response per meta prompt
+            for prompt in prepared_prompts:
+                result = self.openrouter_llm.generate_text(prompt, n=1)
+                all_results.extend(result)
+
+        # Return only the requested number of prompts
+        return all_results[:num_prompts]
+
+    def iterative_generate(self, init_instruct, num_demos, dataset,
+                          rng: np.random.RandomState, evaluator: Evaluator,
+                          num_prompt=1, num_meta_prompt=None, iid_instruct=False, **kwargs):
+        """Generate instructions iteratively using OpenRouter."""
+        if iid_instruct:
+            # Forward pass to get predictions
+            dataset = self.dln_fwd_pass(init_instruct, dataset, evaluator)
+
+        if num_meta_prompt is None:
+            num_meta_prompt = num_prompt
+
+        cur_instruct = init_instruct
+        generated_instructs, used_demos = [], []
+
+        for i_prompt in range(num_prompt):
+            print(f"[Iter {i_prompt}/{num_prompt}] generating prompt with OpenRouter")
+            _generated_instructs, _used_demos = self.generate_instruct_bwd(
+                cur_instruct, num_demos, dataset, rng, evaluator,
+                num_prompt=1, num_meta_prompt=num_meta_prompt, **kwargs)
+            generated_instructs.extend(_generated_instructs)
+
+            if not iid_instruct:
+                cur_instruct = _generated_instructs[0]
+                assert 'prediction' not in dataset[0], \
+                    "For not iid_instruct, the demo predictions have to regenerated every iter."
+
+            if self.dp_engine is not None:
+                if not self.dp_engine.check_dp_budget(raise_error=False):
+                    break
+
+        return generated_instructs, used_demos

@@ -44,6 +44,26 @@ openai_model_types = ['text-davinci-003']
 > :warning: **Warning:** Setting `echo` and `logprobs` simultaneously is no longer supported for certain OpenAI models.
 > However, classification inference with openai models requires both settings. Consider to host your own models, e.g., thru vLLM, instead.
 
+### OpenRouter Integration (New!)
+
+You can now use [OpenRouter](https://openrouter.ai/) to test multiple LLM models for engineer prompts instead of using local models:
+
+```bash
+# Set your OpenRouter API key
+export OPENROUTER_API_KEY="sk-or-v1-..."
+
+# Use OpenRouter for prompt generation
+python train_opt.py \
+  --use_openrouter True \
+  --openrouter_model "meta-llama/llama-3-8b-instruct" \
+  --model "lmsys/vicuna-7b-v1.3" \
+  --data sst2 \
+  --ape_mode iid_ibwd \
+  --num_prompt 5
+```
+
+This allows you to test different models (GPT-4, Claude, Llama, etc.) without downloading them locally. See [OPENROUTER_USAGE.md](OPENROUTER_USAGE.md) for detailed documentation.
+
 **Example**: Do prompt engineer on website:
 ```shell
 pip install gradio

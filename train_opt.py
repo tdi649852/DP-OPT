@@ -8,7 +8,7 @@ from transformers import set_seed, AutoModelForCausalLM, AutoTokenizer
 
 from utils.utils import make_if_not_exist, str2bool
 from utils.template import get_eval_template
-from utils.dln import BackwardInstructGenerator
+from utils.dln import BackwardInstructGenerator, OpenRouterBackwardInstructGenerator
 from utils.data import get_dataset
 from utils.dp import LDGumbelMechanism, ExpMechanism
 from utils.evaluate import Evaluator
@@ -52,6 +52,13 @@ def config_args(parser: argparse.ArgumentParser):
                         help='target total eps for DP before generation stops.')
     parser.add_argument('--tokenwise_gen', default=False, type=str2bool,
                         help='generate prompt token by token. For each token, the batch of demos will be resampled.')
+    # OpenRouter
+    parser.add_argument('--use_openrouter', default=False, type=str2bool,
+                        help='Use OpenRouter API instead of local model for engineer prompts')
+    parser.add_argument('--openrouter_model', default='meta-llama/llama-3-8b-instruct', type=str,
+                        help='OpenRouter model name (e.g., "meta-llama/llama-3-70b-instruct", "anthropic/claude-3-haiku")')
+    parser.add_argument('--openrouter_api_key', default=None, type=str,
+                        help='OpenRouter API key (if not set, will use OPENROUTER_API_KEY env var)')
 
 
 def render_runname(args):
@@ -156,36 +163,80 @@ def main(arg_list=None):
         dp_engine = None
         val_dp_engine = None
 
-    # Load model
-    model_args = {'revision': 'main'}
-    if args.device == 'cuda':
-        model_args['device_map'] = 'auto'
-        model_args['torch_dtype'] = torch.float16
-    model = AutoModelForCausalLM.from_pretrained(args.model, low_cpu_mem_usage=True,
-                                                 **model_args)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False, revision='main')
-    if 'gpt2' in args.model or 'llama' in args.model.lower():
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = 'left'
-    tokenizer.truncation_side = 'left'
-    disable_att_mask =  ('llama' in args.model) or ('vicuna' in args.model)  # llama may have bugs on logits
+    # Load model (skip if using OpenRouter)
+    if args.use_openrouter:
+        print(f"Using OpenRouter with model: {args.openrouter_model}")
+        model = None
+        tokenizer = None
+        disable_att_mask = False
+        # Still need a tokenizer for evaluation model - use a default one
+        eval_model_name = args.model if args.model else 'lmsys/vicuna-7b-v1.3'
+        model_args = {'revision': 'main'}
+        if args.device == 'cuda':
+            model_args['device_map'] = 'auto'
+            model_args['torch_dtype'] = torch.float16
+        eval_model = AutoModelForCausalLM.from_pretrained(eval_model_name, low_cpu_mem_usage=True,
+                                                     **model_args)
+        eval_tokenizer = AutoTokenizer.from_pretrained(eval_model_name, use_fast=False, revision='main')
+        if 'gpt2' in eval_model_name or 'llama' in eval_model_name.lower():
+            eval_tokenizer.pad_token = eval_tokenizer.eos_token
+        eval_tokenizer.padding_side = 'left'
+        eval_tokenizer.truncation_side = 'left'
+    else:
+        model_args = {'revision': 'main'}
+        if args.device == 'cuda':
+            model_args['device_map'] = 'auto'
+            model_args['torch_dtype'] = torch.float16
+        model = AutoModelForCausalLM.from_pretrained(args.model, low_cpu_mem_usage=True,
+                                                     **model_args)
+        tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False, revision='main')
+        if 'gpt2' in args.model or 'llama' in args.model.lower():
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = 'left'
+        tokenizer.truncation_side = 'left'
+        disable_att_mask =  ('llama' in args.model) or ('vicuna' in args.model)  # llama may have bugs on logits
+        eval_model = model
+        eval_tokenizer = tokenizer
 
     # Prepare evaluator
+    eval_model_name = args.openrouter_model if args.use_openrouter else args.model
     instruct_type, eval_template, init_instruct = get_eval_template(
-        args.model, args.data, add_item_name=not args.rm_eval_item_name, instruct_type=args.instruct_type)
-    evaluator = Evaluator(eval_template, label_words, model, tokenizer, dataset, args.batch_size, device=args.device)
+        eval_model_name, args.data, add_item_name=not args.rm_eval_item_name, instruct_type=args.instruct_type)
+    evaluator = Evaluator(eval_template, label_words, eval_model, eval_tokenizer, dataset, args.batch_size, device=args.device)
     
     # Prepare instruction generator.
     if args.ape_mode in ['bwd', 'iid_ibwd']:
-        instruct_generator = BackwardInstructGenerator(
-            model, tokenizer, args.device, args.max_new_tokens,
-            label_words, instruct_type, ensemble_gen=args.ensemble_gen,
-            disable_att_mask=disable_att_mask, gen_batch_size=args.gen_batch_size,
-            gen_temperature=args.gen_temp,
-            rep_penalty=args.rep_penalty,
-            dp_engine=dp_engine,
-            balance_demos=args.balance_demos,
-            tokenwise_gen=args.tokenwise_gen,
+        if args.use_openrouter:
+            # Use OpenRouter-based generator
+            instruct_generator = OpenRouterBackwardInstructGenerator(
+                openrouter_model=args.openrouter_model,
+                label_words=label_words,
+                instruct_type=instruct_type,
+                max_new_tokens=args.max_new_tokens,
+                gen_temperature=args.gen_temp,
+                rep_penalty=args.rep_penalty,
+                dp_engine=dp_engine,
+                balance_demos=args.balance_demos,
+                api_key=args.openrouter_api_key,
+            )
+            # Disable ensemble and tokenwise generation for OpenRouter
+            if args.ensemble_gen:
+                print("Warning: Ensemble generation not fully supported with OpenRouter, disabling...")
+                args.ensemble_gen = False
+            if args.tokenwise_gen:
+                print("Warning: Tokenwise generation not supported with OpenRouter, disabling...")
+                args.tokenwise_gen = False
+        else:
+            # Use local model-based generator
+            instruct_generator = BackwardInstructGenerator(
+                model, tokenizer, args.device, args.max_new_tokens,
+                label_words, instruct_type, ensemble_gen=args.ensemble_gen,
+                disable_att_mask=disable_att_mask, gen_batch_size=args.gen_batch_size,
+                gen_temperature=args.gen_temp,
+                rep_penalty=args.rep_penalty,
+                dp_engine=dp_engine,
+                balance_demos=args.balance_demos,
+                tokenwise_gen=args.tokenwise_gen,
             )
     else:
         raise NotImplementedError(f'ape_mode: {args.ape_mode}')
