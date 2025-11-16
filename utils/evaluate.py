@@ -279,13 +279,17 @@ class Evaluator(object):
 
 
 class OpenRouterEvaluator(Evaluator):
-    """Evaluator that uses OpenRouter API without requiring local models."""
-    
-    def __init__(self, eval_template, label_words, dataset, batch_size, 
+    """Evaluator that uses OpenRouter API without requiring local models.
+
+    WARNING: This evaluator makes one API call per sample, which can be slow and expensive
+    for large datasets. Consider using --skip_eval or --holdout_ratio 0.01 to reduce costs.
+    """
+
+    def __init__(self, eval_template, label_words, dataset, batch_size,
                  openrouter_model: str, api_key: Optional[str] = None,
                  max_tokens=50, device='cuda') -> None:
         """Initialize OpenRouter-based evaluator.
-        
+
         Args:
             eval_template: Template for evaluation
             label_words: List of possible labels
@@ -297,14 +301,14 @@ class OpenRouterEvaluator(Evaluator):
             device: Device (not used, for compatibility)
         """
         from utils.openrouter_llm import OpenRouterLLM
-        
+
         self.eval_template = eval_template
         self.label_words = label_words
         self.dataset = dataset
         self.batch_size = batch_size
         self.max_tokens = max_tokens
         self.device = device  # Not used, kept for compatibility
-        
+
         # Initialize OpenRouter LLM
         self.openrouter_llm = OpenRouterLLM(
             model=openrouter_model,
@@ -313,7 +317,27 @@ class OpenRouterEvaluator(Evaluator):
             max_tokens=max_tokens,
             disable_tqdm=True
         )
-        
+
+        # Print warning about evaluation costs
+        holdout_size = len(dataset.get('holdout', []))
+        validation_size = len(dataset.get('validation', []))
+        total_evals = holdout_size + validation_size
+
+        if total_evals > 100:
+            print(f"\n{'='*70}")
+            print(f"WARNING: OpenRouter Evaluation")
+            print(f"{'='*70}")
+            print(f"Holdout set size: {holdout_size}")
+            print(f"Validation set size: {validation_size}")
+            print(f"Total API calls per prompt: ~{total_evals}")
+            print(f"Estimated time: ~{total_evals * 2 / 60:.1f} minutes per prompt")
+            print(f"Estimated cost: ~${total_evals * 0.00001:.2f}-${total_evals * 0.0001:.2f} per prompt")
+            print(f"\nTo reduce costs:")
+            print(f"  1. Use --holdout_ratio 0.01 (only 1% for validation)")
+            print(f"  2. Use --skip_eval (skip evaluation during training)")
+            print(f"  3. Reduce --num_prompt (generate fewer prompts)")
+            print(f"{'='*70}\n")
+
         # These are not used but kept for compatibility
         self.model = None
         self.tokenizer = None

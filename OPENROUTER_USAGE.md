@@ -127,6 +127,46 @@ When using OpenRouter:
 - **Ensemble generation** (`--ensemble_gen`) is not fully supported and will be disabled
 - **Tokenwise generation** (`--tokenwise_gen`) is not supported and will be disabled
 - **DP mechanisms** may have different behavior compared to local models
+- **Evaluation is slow**: Makes one API call per sample, which can be slow for large datasets
+
+### ⚠️ Important: Evaluation Speed & Costs
+
+OpenRouter evaluation processes samples sequentially (one API call per sample). For large validation sets:
+
+**Problem:**
+- Default SST-2 dataset: ~8,700 samples
+- With `--holdout_ratio 0.99`: ~8,600 validation samples
+- Time: ~8,600 samples × 2 seconds = **~5 hours**
+- Cost: ~$5-10 per evaluation run
+
+**Solutions:**
+
+1. **Use smaller validation set (Recommended):**
+   ```bash
+   --holdout_ratio 0.01  # Use only 1% for validation (~87 samples)
+   ```
+
+2. **Skip evaluation during training:**
+   ```bash
+   --skip_eval  # Only generate prompts, no evaluation
+   ```
+
+3. **Evaluate offline:**
+   - Generate prompts with `--skip_eval`
+   - Evaluate later with a local model or smaller sample
+
+**Recommended settings for OpenRouter:**
+```bash
+python train_opt.py \
+  --use_openrouter True \
+  --openrouter_model "meta-llama/llama-3-8b-instruct" \
+  --data sst2 \
+  --holdout_ratio 0.01 \
+  --num_prompt 3 \
+  --device cpu
+```
+
+This reduces validation from ~8,600 to ~87 samples (100x faster, 100x cheaper)
 
 ## Cost Estimation
 
