@@ -46,23 +46,29 @@ openai_model_types = ['text-davinci-003']
 
 ### OpenRouter Integration (New!)
 
-You can now use [OpenRouter](https://openrouter.ai/) to test multiple LLM models for engineer prompts instead of using local models:
+You can now use [OpenRouter](https://openrouter.ai/) to run DP-OPT **without any local models**:
 
 ```bash
 # Set your OpenRouter API key
 export OPENROUTER_API_KEY="sk-or-v1-..."
 
-# Use OpenRouter for prompt generation
+# Run entirely via OpenRouter - NO GPU or model downloads needed!
 python train_opt.py \
   --use_openrouter True \
   --openrouter_model "meta-llama/llama-3-8b-instruct" \
-  --model "lmsys/vicuna-7b-v1.3" \
   --data sst2 \
   --ape_mode iid_ibwd \
-  --num_prompt 5
+  --num_prompt 5 \
+  --device cpu
 ```
 
-This allows you to test different models (GPT-4, Claude, Llama, etc.) without downloading them locally. See [OPENROUTER_USAGE.md](OPENROUTER_USAGE.md) for detailed documentation.
+**Benefits:**
+- ✅ **No GPU required** - runs on CPU
+- ✅ **No model downloads** - no storage or bandwidth needed
+- ✅ **Test multiple models** - GPT-4, Claude, Llama, Mistral, etc.
+- ✅ **Quick start** - begin experimenting immediately
+
+See [OPENROUTER_USAGE.md](OPENROUTER_USAGE.md) for detailed documentation.
 
 **Example**: Do prompt engineer on website:
 ```shell

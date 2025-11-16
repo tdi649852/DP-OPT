@@ -13,6 +13,7 @@ from utils.dp import ExpMechanism
 
 from .template import DataCollatorWithOptAndTemplate
 from torch.utils.data import DataLoader
+from typing import Optional
 
 
 class ReachMaxTokenException(Exception):
@@ -275,3 +276,103 @@ class Evaluator(object):
         
         save_dict.update(instruct_metrics)
         return instruct_metrics, save_dict
+
+
+class OpenRouterEvaluator(Evaluator):
+    """Evaluator that uses OpenRouter API without requiring local models."""
+    
+    def __init__(self, eval_template, label_words, dataset, batch_size, 
+                 openrouter_model: str, api_key: Optional[str] = None,
+                 max_tokens=50, device='cuda') -> None:
+        """Initialize OpenRouter-based evaluator.
+        
+        Args:
+            eval_template: Template for evaluation
+            label_words: List of possible labels
+            dataset: Dataset dict with 'train', 'holdout', 'validation' splits
+            batch_size: Batch size for evaluation
+            openrouter_model: OpenRouter model name
+            api_key: OpenRouter API key (optional)
+            max_tokens: Max tokens for generation
+            device: Device (not used, for compatibility)
+        """
+        from utils.openrouter_llm import OpenRouterLLM
+        
+        self.eval_template = eval_template
+        self.label_words = label_words
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.max_tokens = max_tokens
+        self.device = device  # Not used, kept for compatibility
+        
+        # Initialize OpenRouter LLM
+        self.openrouter_llm = OpenRouterLLM(
+            model=openrouter_model,
+            api_key=api_key,
+            temperature=0.0,  # Use low temperature for evaluation
+            max_tokens=max_tokens,
+            disable_tqdm=True
+        )
+        
+        # These are not used but kept for compatibility
+        self.model = None
+        self.tokenizer = None
+        self.is_openai_model = False
+
+    def batch_eval_prompt(self, texts, candidate_texts, labels, **kwargs):
+        """Evaluate prompts using OpenRouter generation."""
+        batch_size = len(texts)
+        
+        # For each text, we need to classify it
+        pred_labels = []
+        batch_losses = []
+        
+        for text, _candidate_texts, label in zip(texts, candidate_texts, labels):
+            # Generate response from the model
+            # We'll use the first candidate text as the prompt
+            prompt = _candidate_texts[0].strip()
+            
+            # Extract just the input part (before the label)
+            # The candidate_texts contain the full prompt + label
+            # We want to generate the label
+            
+            # Find where the label words might appear
+            # Simple approach: ask the model to classify
+            classification_prompt = f"{prompt.rsplit(self.label_words[0], 1)[0] if self.label_words[0] in prompt else prompt}"
+            
+            try:
+                response = self.openrouter_llm.generate_text(classification_prompt, n=1)[0]
+                
+                # Parse response to find which label it matches
+                response_lower = response.lower().strip()
+                
+                # Check which label word appears in the response
+                label_scores = []
+                for i, label_word in enumerate(self.label_words):
+                    if label_word.lower() in response_lower:
+                        label_scores.append((i, response_lower.index(label_word.lower())))
+                    else:
+                        label_scores.append((i, float('inf')))
+                
+                # Choose the label that appears first in the response
+                if label_scores:
+                    pred_label = min(label_scores, key=lambda x: x[1])[0]
+                    # If no label found, default to 0
+                    if label_scores[pred_label][1] == float('inf'):
+                        pred_label = 0
+                else:
+                    pred_label = 0
+                    
+                pred_labels.append(pred_label)
+                
+                # Compute loss (0 if correct, 1 if wrong - simplified)
+                loss = 0.0 if pred_label == label else 1.0
+                batch_losses.append(loss)
+                
+            except Exception as e:
+                print(f"Error during OpenRouter evaluation: {e}")
+                # Default to first label on error
+                pred_labels.append(0)
+                batch_losses.append(1.0)
+        
+        return batch_losses, np.array(pred_labels)

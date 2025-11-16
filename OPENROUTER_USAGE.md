@@ -59,7 +59,7 @@ OpenRouter provides access to many models. Here are some popular options:
 
 See the full list at [https://openrouter.ai/docs#models](https://openrouter.ai/docs#models)
 
-### Example: Using Claude 3 Haiku
+### Example: Using Claude 3 Haiku (No Local Model)
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
@@ -67,39 +67,45 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 python train_opt.py \
   --use_openrouter True \
   --openrouter_model "anthropic/claude-3-haiku" \
-  --model "lmsys/vicuna-7b-v1.3" \
   --data sst2 \
   --ape_mode iid_ibwd \
   --num_prompt 3 \
   --max_new_tokens 100 \
-  --gen_temp 0.7
+  --gen_temp 0.7 \
+  --device cpu
 ```
 
-### Example: Using GPT-4 Turbo
+**Note:** No `--model` argument needed! OpenRouter handles everything.
+
+### Example: Using GPT-4 Turbo (CPU-Only)
 
 ```bash
 python train_opt.py \
   --use_openrouter True \
   --openrouter_model "openai/gpt-4-turbo" \
   --openrouter_api_key "sk-or-v1-..." \
-  --model "lmsys/vicuna-7b-v1.3" \
   --data trec \
   --ape_mode iid_ibwd \
-  --num_prompt 5
+  --num_prompt 5 \
+  --device cpu
 ```
+
+**Note:** Runs entirely on CPU since no local model inference is performed!
 
 ## How It Works
 
 When `--use_openrouter True` is set:
 
 1. **Engineer Prompts:** The backward instruction generator uses the specified OpenRouter model to generate improved prompts based on success/failure examples
-2. **Evaluation:** The local model (specified by `--model`) is still used to evaluate the generated prompts on the task
-3. **Cost:** You only pay for the OpenRouter API calls for prompt generation, not for evaluation
+2. **Evaluation:** OpenRouter is also used to evaluate the generated prompts - **no local model is needed**
+3. **Cost:** You pay for OpenRouter API calls for both prompt generation and evaluation
+4. **No Downloads:** No large models are downloaded to your machine
 
 This allows you to:
-- Test different LLMs for prompt engineering without downloading large models
-- Compare performance of different models (GPT-4, Claude, Llama, etc.)
-- Reduce local compute requirements for prompt generation
+- **Run without GPU:** No local model means no GPU requirement
+- **Test different LLMs:** Try GPT-4, Claude, Llama, etc. without downloading them
+- **Low resource usage:** Perfect for laptops or machines without powerful GPUs
+- **Quick experimentation:** Start testing immediately without waiting for model downloads
 
 ## Configuration Options
 
@@ -108,6 +114,8 @@ This allows you to:
 | `--use_openrouter` | False | Enable OpenRouter integration |
 | `--openrouter_model` | `meta-llama/llama-3-8b-instruct` | OpenRouter model to use |
 | `--openrouter_api_key` | None | API key (or use `OPENROUTER_API_KEY` env var) |
+| `--model` | N/A | **Optional when using OpenRouter** - no local model needed |
+| `--device` | `cuda` | Use `cpu` when using OpenRouter (no GPU needed) |
 | `--gen_temp` | 0.9 | Temperature for prompt generation |
 | `--max_new_tokens` | 128 | Max tokens for generated prompts |
 | `--rep_penalty` | 1.0 | Repetition penalty |

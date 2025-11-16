@@ -11,7 +11,7 @@ from utils.template import get_eval_template
 from utils.dln import BackwardInstructGenerator, OpenRouterBackwardInstructGenerator
 from utils.data import get_dataset
 from utils.dp import LDGumbelMechanism, ExpMechanism
-from utils.evaluate import Evaluator
+from utils.evaluate import Evaluator, OpenRouterEvaluator
 
 CHECKPOINT_ROOT = './checkpoint'
 
@@ -163,25 +163,15 @@ def main(arg_list=None):
         dp_engine = None
         val_dp_engine = None
 
-    # Load model (skip if using OpenRouter)
+    # Load model (skip entirely if using OpenRouter)
     if args.use_openrouter:
         print(f"Using OpenRouter with model: {args.openrouter_model}")
+        print("Skipping local model loading - using OpenRouter for both generation and evaluation")
         model = None
         tokenizer = None
         disable_att_mask = False
-        # Still need a tokenizer for evaluation model - use a default one
-        eval_model_name = args.model if args.model else 'lmsys/vicuna-7b-v1.3'
-        model_args = {'revision': 'main'}
-        if args.device == 'cuda':
-            model_args['device_map'] = 'auto'
-            model_args['torch_dtype'] = torch.float16
-        eval_model = AutoModelForCausalLM.from_pretrained(eval_model_name, low_cpu_mem_usage=True,
-                                                     **model_args)
-        eval_tokenizer = AutoTokenizer.from_pretrained(eval_model_name, use_fast=False, revision='main')
-        if 'gpt2' in eval_model_name or 'llama' in eval_model_name.lower():
-            eval_tokenizer.pad_token = eval_tokenizer.eos_token
-        eval_tokenizer.padding_side = 'left'
-        eval_tokenizer.truncation_side = 'left'
+        eval_model = None
+        eval_tokenizer = None
     else:
         model_args = {'revision': 'main'}
         if args.device == 'cuda':
@@ -202,7 +192,22 @@ def main(arg_list=None):
     eval_model_name = args.openrouter_model if args.use_openrouter else args.model
     instruct_type, eval_template, init_instruct = get_eval_template(
         eval_model_name, args.data, add_item_name=not args.rm_eval_item_name, instruct_type=args.instruct_type)
-    evaluator = Evaluator(eval_template, label_words, eval_model, eval_tokenizer, dataset, args.batch_size, device=args.device)
+
+    if args.use_openrouter:
+        # Use OpenRouter evaluator - no local model needed
+        evaluator = OpenRouterEvaluator(
+            eval_template=eval_template,
+            label_words=label_words,
+            dataset=dataset,
+            batch_size=args.batch_size,
+            openrouter_model=args.openrouter_model,
+            api_key=args.openrouter_api_key,
+            max_tokens=50,
+            device=args.device
+        )
+    else:
+        # Use local model evaluator
+        evaluator = Evaluator(eval_template, label_words, eval_model, eval_tokenizer, dataset, args.batch_size, device=args.device)
     
     # Prepare instruction generator.
     if args.ape_mode in ['bwd', 'iid_ibwd']:
